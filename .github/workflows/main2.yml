@@ -1,0 +1,34 @@
+name: Smart Model Download
+on:
+  workflow_dispatch:
+    inputs:
+      download_full:
+        description: 'Download full model (including large files)'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  handle-model:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y git-lfs wget
+        
+    - name: Clone without LFS files
+      run: |
+        GIT_LFS_SKIP_SMUDGE=1 git clone https://huggingface.co/spaces/Wan-AI/Wan2.2-Animate
+        cd Wan2.2-Animate
+        echo "Repository cloned without large files"
+        find . -name "*.py" -o -name "*.json" -o -name "*.txt" | head -10
+    
+    - name: Conditionally download large files
+      if: inputs.download_full
+      run: |
+        cd Wan2.2-Animate
+        git lfs pull --include="*.safetensors,*.ckpt,*.bin"
