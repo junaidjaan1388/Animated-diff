@@ -1,122 +1,56 @@
-name: Animate Diff CI/CD
+name: Telegram Bot CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
   pull_request:
-    branches: [ main ]
-  workflow_dispatch:
-    inputs:
-      prompt:
-        description: 'Animation prompt'
-        required: true
-        default: 'A cat walking in the park'
-
-env:
-  PYTHON_VERSION: '3.10'
+    branches: [ main, master ]
 
 jobs:
-  setup-and-test:
+  test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-        
-    - name: Install system dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y ffmpeg
-        
-    - name: Upgrade pip
-      run: python -m pip install --upgrade pip
-      
-    - name: Install Python dependencies directly
-      run: |
-        pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-        pip install diffusers transformers accelerate opencv-python pillow imageio imageio-ffmpeg
-        pip install matplotlib numpy scipy
-        # If you have a requirements.txt, install it
-        if [ -f "requirements.txt" ]; then
-          pip install -r requirements.txt
-        fi
-        
-    - name: Verify installation
-      run: |
-        python -c "
-import torch
-print('PyTorch version:', torch.__version__)
-import diffusers
-print('Diffusers version:', diffusers.__version__)
-import transformers
-print('Transformers version:', transformers.__version__)
-print('All imports successful!')
-        "
-        
-    - name: Test basic animation script
-      run: |
-        # Create a simple test script to verify functionality
-        cat > test_basic.py << 'EOF'
-import torch
-from diffusers import DiffusionPipeline
-import numpy as np
-print("Testing basic diffusers functionality...")
-
-# Test that we can create a simple pipeline (CPU only for testing)
-try:
-    pipe = DiffusionPipeline.from_pretrained(
-        "hf-internal-testing/tiny-stable-diffusion-torch", 
-        torch_dtype=torch.float32
-    )
-    print("✓ Pipeline creation successful")
-except Exception as e:
-    print(f"Pipeline test skipped (expected on CPU): {e}")
-
-print("Basic functionality test completed!")
-EOF
-        
-        python test_basic.py
-
-  generate-animation:
-    needs: setup-and-test
-    runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      
+
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: ${{ env.PYTHON_VERSION }}
-        
+        python-version: '3.11'
+
     - name: Install dependencies
       run: |
-        pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-        pip install diffusers transformers opencv-python pillow imageio
-        
-    - name: Create outputs directory
-      run: mkdir -p outputs
-      
-    - name: Generate animation placeholder
+        pip install -r requirements.txt
+
+    - name: Run basic tests
       run: |
-        PROMPT="${{ github.event.inputs.prompt }}"
-        echo "Animation Generation Results" > outputs/result.txt
-        echo "Prompt: $PROMPT" >> outputs/result.txt
-        echo "Status: Success" >> outputs/result.txt
-        echo "Note: This is a placeholder - actual animation requires GPU" >> outputs/result.txt
-        cat outputs/result.txt
-        
-    - name: Upload result
-      uses: actions/upload-artifact@v4
-      with:
-        name: animation-output
-        path: outputs/
-        retention-days: 5
+        python -c "
+        # Test imports
+        try:
+            import telegram
+            import python-telegram-bot
+            print('✅ All imports successful!')
+        except ImportError as e:
+            print(f'❌ Import error: {e}')
+            exit(1)
+        "
+
+    - name: Check bot syntax
+      run: |
+        python -m py_compile bot.py
+        echo "✅ Bot syntax is correct"
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Deploy notification
+      run: |
+        echo "🚀 Deployment ready for ${{ github.sha }}"
+        echo "Add your deployment steps here"
