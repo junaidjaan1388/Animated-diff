@@ -1,0 +1,55 @@
+name: Animate Diff Training/Inference
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:  # Manual trigger
+
+jobs:
+  animate-diff-training:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.8, 3.9, 3.10]
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+        
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg
+        
+    - name: Cache models
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/huggingface/hub
+        key: ${{ runner.os }}-models-${{ hashFiles('requirements.txt') }}
+        
+    - name: Install dependencies
+      run: |
+        pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu117
+        pip install -r requirements.txt
+        pip install accelerate diffusers transformers opencv-python pillow
+        
+    - name: Run Animate Diff inference
+      run: |
+        python scripts/animate_diff_inference.py \
+          --config configs/inference.yaml \
+          --prompt "A cat walking" \
+          --output output/animation.gif
+          
+    - name: Upload generated animation
+      uses: actions/upload-artifact@v3
+      with:
+        name: generated-animations
+        path: output/
+        retention-days: 7
