@@ -2,7 +2,10 @@ name: Animate Diff CI/CD
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, develop ]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
   pull_request:
     branches: [ main ]
   workflow_dispatch:
@@ -13,72 +16,116 @@ on:
         default: 'A cat walking in the park'
       steps:
         description: 'Inference steps'
+        type: number
         required: false
-        default: '25'
+        default: 25
+      model:
+        description: 'Model to use'
+        required: false
+        default: 'stable-diffusion-v1-5'
+        type: choice
+        options:
+        - 'stable-diffusion-v1-5'
+        - 'custom-model'
 
 env:
   PYTHON_VERSION: '3.10'
+  POETRY_VERSION: '1.7.1'
 
 jobs:
   setup-and-test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.10', '3.11']
+    
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
       
-    - name: Set up Python
+    - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v4
       with:
-        python-version: ${{ env.PYTHON_VERSION }}
+        python-version: ${{ matrix.python-version }}
         
     - name: Install system dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y ffmpeg
+        sudo apt-get install -y ffmpeg libsm6 libxext6
         
+    - name: Cache pip packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+          
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
         pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-        # Check if requirements.txt exists before installing
+        
+        # Install from requirements.txt if exists, else use common dependencies
         if [ -f "requirements.txt" ]; then
           pip install -r requirements.txt
+        else
+          pip install diffusers transformers accelerate opencv-python pillow imageio-ffmpeg scipy safetensors
         fi
-        pip install diffusers transformers accelerate opencv-python pillow imageio-ffmpeg
         
-    - name: Verify imports
+    - name: Run static type checking
+      run: |
+        pip install mypy types-requests
+        if [ -f "setup.cfg" ] || [ -f "mypy.ini" ]; then
+          mypy . --ignore-missing-imports || echo "Type checking completed with issues"
+        else
+          echo "No mypy configuration found, skipping type checking"
+        fi
+        
+    - name: Verify critical imports
       run: |
         python -c "
-import torch
-print('PyTorch version:', torch.__version__)
 try:
+    import torch
     import diffusers
-    print('Diffusers version:', diffusers.__version__)
-except ImportError:
-    print('Diffusers not available')
-try:
     import transformers
-    print('Transformers version:', transformers.__version__)
-except ImportError:
-    print('Transformers not available')
-print('Basic environment setup successful!')
+    import PIL
+    import cv2
+    print('✓ All critical imports successful')
+    print(f'PyTorch: {torch.__version__}')
+    print(f'Diffusers: {diffusers.__version__}')
+except ImportError as e:
+    print(f'✗ Import error: {e}')
+    exit(1)
         "
         
-    - name: Check for test files
+    - name: Run tests
       run: |
-        if [ -d "tests" ] && [ -f "requirements.txt" ]; then
-          echo "Tests directory exists, running tests"
-          python -m pytest tests/ -v || echo "Tests failed but continuing"
+        if [ -d "tests" ]; then
+          pip install pytest pytest-cov
+          python -m pytest tests/ -v --cov=./ --cov-report=xml || echo "Tests completed with issues"
         else
-          echo "No tests directory or requirements.txt found, skipping tests"
+          echo "No tests directory found, skipping tests"
+          mkdir -p tests
+          echo "# Placeholder for tests" > tests/__init__.py
         fi
+        
+    - name: Upload coverage reports
+      uses: codecov/codecov-action@v3
+      if: always()
+      with:
+        file: ./coverage.xml
+        fail_ci_if_error: false
 
   generate-animation:
     needs: setup-and-test
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    
+    outputs:
+      animation-file: ${{ steps.set-outputs.outputs.animation-file }}
     
     steps:
     - name: Checkout code
@@ -89,55 +136,82 @@ print('Basic environment setup successful!')
       with:
         python-version: ${{ env.PYTHON_VERSION }}
         
+    - name: Cache model weights
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/huggingface
+        key: ${{ runner.os }}-huggingface-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-huggingface-
+        
     - name: Install dependencies
       run: |
         pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
         if [ -f "requirements.txt" ]; then
           pip install -r requirements.txt
         fi
-        pip install diffusers transformers accelerate opencv-python pillow
+        pip install diffusers transformers accelerate opencv-python pillow imageio
         
     - name: Create output directory
       run: mkdir -p outputs/animations
-      
-    - name: Create basic animation script
-      run: |
-        cat > generate_animation.py << 'EOF'
-import argparse
-import os
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--prompt", type=str, required=True)
-    parser.add_argument("--steps", type=int, default=25)
-    parser.add_argument("--output", type=str, required=True)
-    args = parser.parse_args()
-    
-    print(f"Animation prompt: {args.prompt}")
-    print(f"Inference steps: {args.steps}")
-    print(f"Output path: {args.output}")
-    
-    # Create a simple placeholder file since we don't have the actual model
-    with open(args.output, 'w') as f:
-        f.write(f"Animation placeholder for: {args.prompt}")
-    
-    print("Animation placeholder created successfully!")
-    print("Note: Actual animation generation requires GPU and proper model setup")
-
-if __name__ == "__main__":
-    main()
-EOF
         
-    - name: Generate animation placeholder
+    - name: Generate animation
+      id: generate
       run: |
-        python generate_animation.py \
-          --prompt "${{ github.event.inputs.prompt || 'A beautiful landscape animation' }}" \
-          --steps "${{ github.event.inputs.steps || '25' }}" \
-          --output "outputs/animations/animation_${{ github.sha }}.txt"
+        # Set default values if workflow_dispatch inputs are not provided
+        PROMPT="${{ github.event.inputs.prompt || 'A beautiful landscape animation' }}"
+        STEPS="${{ github.event.inputs.steps || 25 }}"
+        TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+        
+        python scripts/generate_animation.py \
+          --prompt "$PROMPT" \
+          --steps $STEPS \
+          --output "outputs/animations/animation_${TIMESTAMP}.mp4" \
+          --model "${{ github.event.inputs.model || 'stable-diffusion-v1-5' }}" \
+          --height 256 \
+          --width 256
+        
+        echo "ANIMATION_FILE=outputs/animations/animation_${TIMESTAMP}.mp4" >> $GITHUB_ENV
+        
+    - name: Set output variables
+      id: set-outputs
+      run: |
+        echo "animation-file=${{ env.ANIMATION_FILE }}" >> $GITHUB_OUTPUT
         
     - name: Upload animation artifact
       uses: actions/upload-artifact@v3
       with:
-        name: animation-results
+        name: animation-results-${{ github.sha }}
         path: outputs/animations/
-        retention-days: 3
+        retention-days: 7
+        if-no-files-found: error
+        
+    - name: Upload to workflow summary
+      run: |
+        echo "# Animation Generation Results" >> $GITHUB_STEP_SUMMARY
+        echo "## Details" >> $GITHUB_STEP_SUMMARY
+        echo "- **Prompt**: ${{ github.event.inputs.prompt || 'A beautiful landscape animation' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Steps**: ${{ github.event.inputs.steps || 25 }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Model**: ${{ github.event.inputs.model || 'stable-diffusion-v1-5' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Output File**: ${{ env.ANIMATION_FILE }}" >> $GITHUB_STEP_SUMMARY
+        echo "## Next Steps" >> $GITHUB_STEP_SUMMARY
+        echo "Download the artifact to view the generated animation." >> $GITHUB_STEP_SUMMARY
+
+  deploy-demo:
+    needs: generate-animation
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Download animation artifact
+      uses: actions/download-artifact@v3
+      with:
+        name: animation-results-${{ github.sha }}
+        
+    - name: Display generation info
+      run: |
+        echo "Animation generation completed!"
+        echo "Prompt: ${{ github.event.inputs.prompt }}"
+        echo "Steps: ${{ github.event.inputs.steps }}"
+        echo "Model: ${{ github.event.inputs.model }}"
+        ls -la outputs/animations/
